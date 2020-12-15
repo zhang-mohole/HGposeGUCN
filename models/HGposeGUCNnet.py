@@ -29,7 +29,7 @@ class HGposeGUCN(nn.Module):
             self.gucn.load_state_dict(new_dict)
 
     def forward(self, x):
-        hms, pose_2d_hm, coord_2d_pose = self.poseHG(x)
-        pose2d = 0.5 * (pose_2d_hm + coord_2d_pose)
+        hms, pose_2d_hm, coord_2d_res = self.poseHG(x)
+        pose2d = pose_2d_hm + coord_2d_res
         pose3d = self.gucn(pose2d)
-        return hms, pose2d, pose3d
+        return hms, pose_2d_hm, coord_2d_res, pose2d, pose3d
