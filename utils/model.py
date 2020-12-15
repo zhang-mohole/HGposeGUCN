@@ -1,15 +1,11 @@
 # -*- coding: utf-8 -*-
 from models.graphunet import GraphUNet, GraphNet, GraphUHandNet
 from models.resnet import resnet10, resnet18, resnet50, resnet101
-from models.hopenet import HopeNet
 from models.hourglass import Net_HM_HG
 from models.poseHG import Net_Pose_HG
 
 def select_model(model_def):
-    if model_def.lower() == 'hopenet':
-        model = HopeNet()
-        print('HopeNet is loaded')
-    elif model_def.lower() == 'hourglass':
+    if model_def.lower() == 'hourglass':
         model = Net_HM_HG(21)
         print('HourGlass Net is loaded')
     elif model_def.lower() == 'posehg':
