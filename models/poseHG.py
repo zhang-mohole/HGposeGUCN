@@ -10,6 +10,7 @@ from __future__ import unicode_literals
 
 import torch
 import torch.nn as nn
+from models.softargmax2d import SoftArgmax2D
 
 
 class Hourglass(nn.Module):
@@ -115,6 +116,7 @@ class Net_Pose_HG(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
 
         self.heatmapLoss = HeatmapLoss()
+        self.softargmax2d = SoftArgmax2D()
 
         self.pose2d_conv = nn.Sequential(
             nn.Conv2d(256*2, 512, bias=True, kernel_size=3, stride=2, padding=1),
@@ -128,7 +130,7 @@ class Net_Pose_HG(nn.Module):
             self.avgpool
         )
         self.pose2d_fc = nn.Sequential(
-            nn.Linear(1024, 128, bias=True), self.relu,
+            nn.Linear(1024+21*2, 128, bias=True), self.relu,
             nn.Linear(128, 21*2)
         )
 
@@ -171,13 +173,16 @@ class Net_Pose_HG(nn.Module):
                 # x_avg_pool = self.avgpool(ll)
                 # encoding.append(x_avg_pool.squeeze())
 
-        coord_2d_hm = self.soft_argmax_2d(out[-1])
+        # coord_2d_hm = self.soft_argmax_2d(out[-1])
+        coord_2d_hm = self.softargmax2d(out[-1])
         coord_2d_hm = coord_2d_hm * (256/64)
 
-        coord_2d_pose = self.pose2d_conv(torch.cat(encoding, dim=1)) #(B, 256*2, 64, 64) --> (B, 1024, 1, 1)
-        coord_2d_pose = self.pose2d_fc(coord_2d_pose.squeeze()) # (B, 21*2)
+        # coord_2d_pose = self.pose2d_conv(torch.cat(encoding, dim=1)) #(B, 256*2, 64, 64) --> (B, 1024, 1, 1)
+        # coord_2d_pose = self.pose2d_fc(coord_2d_pose.squeeze()) # (B, 21*2)
+        coord_2d_res = self.pose2d_conv(torch.cat(encoding, dim=1)) #(B, 256*2, 64, 64) --> (B, 1024, 1, 1)
+        coord_2d_res = self.pose2d_fc(torch.cat([coord_2d_res.squeeze(), coord_2d_hm.reshape(-1, 21*2)], dim=1)) # (B, 21*2)
 
-        return out, coord_2d_hm, coord_2d_pose.reshape(-1, 21, 2)
+        return out, coord_2d_hm, coord_2d_res.reshape(-1, 21, 2)
         # return out, torch.cat(encoding, dim=-1)
         # return out, encoding #所有阶段的中间heatmap输出；所有阶段的featumaps (num_stage, B, #joint, 64,64) (num_stage ,B, 256, 64, 64)
         # return coord_2d_ini, out, torch.cat(encoding, dim=-1) #(#stage, B, #joint, 64, 64); (B, 256*#stage)
@@ -198,7 +203,7 @@ class Net_Pose_HG(nn.Module):
         assert features.dim()==4
         # alpha is here to make the largest element really big, so it
         # would become very close to 1 after softmax
-        alpha = 100.0 
+        alpha = 1000.0 
         N,C,H,W = features.shape
         soft_max = nn.functional.softmax(features.contiguous().view(N,C,-1)*alpha,dim=2)
         soft_max = soft_max.contiguous().view(features.shape)
@@ -206,15 +211,10 @@ class Net_Pose_HG(nn.Module):
         indices_kernel = indices_kernel.contiguous().view((H,W))
         conv = soft_max*indices_kernel.float()
         indices = conv.sum(2).sum(2)
-        # y = indices%W
-        # x = (indices/W).floor()%H
-        # coords = torch.stack([x,y],dim=2)
-        y = indices%W + 1
-        x = (indices/W).floor()%H + 1
-        coords = torch.stack([y,x],dim=2)
+        x = indices%W + 1
+        y = (indices/W).floor()%H + 1
+        coords = torch.stack([x,y],dim=2)
         return coords
- 
-
 
 
 
