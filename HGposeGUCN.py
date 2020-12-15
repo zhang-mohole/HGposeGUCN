@@ -74,7 +74,8 @@ scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step, gamma=a
 scheduler.last_epoch = start
 lambda_3d = 5
 lambda_2d = 0.001
-lambda_hm = 1
+lambda_2dres = 0.01
+lambda_hm = 0.1
 
 """# pre train"""
 def calc_loss(combined_hm_preds, heatmaps):
@@ -90,10 +91,14 @@ if args.train:
     print('Begin pre_training the network...')
     for epoch in range(start, args.num_epoch):  # loop over the dataset multiple times
         e_dis3d = []
+        e_dis2d = []
         with tqdm(total=trainloader.__len__(), 
                 bar_format='{n_fmt}/{total_fmt} |{bar}| {rate_fmt} {postfix}', ncols=120) as process_bar: 
             train_loss = 0.0
-
+            l_2d = 0.0
+            l_3d = 0.0
+            l_hm = 0.0
+            l_res = 0.0
             for i, tr_data in enumerate(trainloader):
                 # get the inputs
                 imgs, hm, labels2d, labels3d, scale_label = tr_data
@@ -112,20 +117,24 @@ if args.train:
                 # zero the parameter gradients
                 optimizer.zero_grad()
                 # forward + backward + optimize
-                out_hms, outputs2d, outputs3d = model(imgs)
+                out_hms, pose_2d_hm, coord_2d_res, outputs2d, outputs3d = model(imgs)
                 loss_hm = calc_loss(out_hms, hm)
                 loss_hm = loss_hm.mean()
+                loss_2dhm = criterion(pose_2d_hm, labels2d)
+                loss_2dres = criterion(coord_2d_res, labels2d-pose_2d_hm)
                 loss_2d = criterion(outputs2d, labels2d)
                 loss_3d = criterion(outputs3d, labels3d)
                 
-                loss = (lambda_hm * loss_hm) + (lambda_2d * loss_2d) + (lambda_3d * loss_3d)
+                # loss = (lambda_hm * loss_hm) + (lambda_2d * loss_2d) + (lambda_3d * loss_3d)
+                # loss = (lambda_2dres * loss_2dres) + (lambda_2d * loss_2dhm) + (lambda_3d * loss_3d)
+                loss = (lambda_hm * loss_hm) + (lambda_2dres * loss_2dres) + (lambda_3d * loss_3d)
 
                 train_loss += loss.data
                 loss.backward()
                 optimizer.step()
 
-                process_bar.set_postfix_str('loss=%.5f; l_hm=%.5f, l_2d=%.5f, l_3d=%.5f' % 
-                                            (loss.data, loss_hm.data, loss_2d.data, loss_3d.data))
+                process_bar.set_postfix_str('loss=%.5f; res=%.5f, hm=%.5f, 2d=%.5f, 3d=%.5f' % 
+                                            (loss.data, loss_2dres.data, loss_2dhm.data, loss_2d.data, loss_3d.data))
                 process_bar.update()
 
                 # calculate the distance between label3d and output3d
@@ -134,14 +143,27 @@ if args.train:
                 b_dis3d = torch.norm(labels3d - outputs3d, dim = -1)
                 b_dis3d = b_dis3d.cpu().detach().numpy() #* 1000 [B, 21]
                 b_dis3d = b_dis3d / np.repeat(scale_label.reshape(-1, 1), 21, axis=-1)
-
                 e_dis3d.append(b_dis3d)
+
+                # calculate the distance between label2d and output2d
+                b_labels2d = labels2d.reshape(-1, 21, 2) #[B, 21, 2]
+                b_dis2d = torch.norm(labels2d - outputs2d, dim = -1)
+                b_dis2d = b_dis2d.cpu().detach().numpy() #* 1000 [B, 21]
+                e_dis2d.append(b_dis2d)
+
+                l_2d += loss_2d.data
+                l_3d += loss_3d.data
+                l_hm += loss_2dhm.data
+                l_res += loss_2dres.data
 
         # calculate auc for this epoch
         e_dis3d = np.r_[e_dis3d] 
         auc_trian = calc_auc(e_dis3d.reshape(-1), 20, 50)
 
-        print('%d epoch training done, train loss=%.5f, auc20-50=%.5f' % (epoch+1, train_loss / (i+1), auc_trian))
+        e_dis2d = np.r_[e_dis2d] 
+
+        print('%d epoch training done, train loss=%.5f, auc20-50=%.5f, m_3d=%.2f, m_2d=%.2f' % 
+            (epoch+1, train_loss / (i+1), auc_trian, np.mean(e_dis3d), np.mean(e_dis2d)))
         # losses.append((train_loss / (i+1)).cpu().numpy())
         if (epoch+1) % args.snapshot_epoch == 0:
             torch.save(model.state_dict(), args.output_file+str(epoch+1)+'.pkl')
@@ -160,7 +182,9 @@ if args.test:
     l_2d = 0.0
     l_3d = 0.0
     l_hm = 0.0
+    l_res = 0.0
     e_dis3d = []
+    e_dis2d = []
     for i, ts_data in enumerate(testloader):
         # get the inputs
         imgs, hm, labels2d, labels3d, scale_label = ts_data
@@ -177,14 +201,23 @@ if args.test:
             labels2d = labels2d.float().cuda(device=args.gpu_number[0])
             labels3d = labels3d.float().cuda(device=args.gpu_number[0])
 
-        out_hms, outputs2d, outputs3d = model(imgs)
+        out_hms, pose_2d_hm, coord_2d_res, outputs2d, outputs3d = model(imgs)
 
         loss_hm = calc_loss(out_hms, hm)
         loss_hm = loss_hm.mean()
+        loss_2dhm = criterion(pose_2d_hm, labels2d)
+        loss_2dres = criterion(coord_2d_res, labels2d-pose_2d_hm)
         loss_2d = criterion(outputs2d, labels2d)
         loss_3d = criterion(outputs3d, labels3d)
 
-        loss = (lambda_hm * loss_hm) + (lambda_2d * loss_2d) + (lambda_3d * loss_3d)
+        loss = (lambda_hm * loss_hm) + (lambda_2dres * loss_2dres) + (lambda_3d * loss_3d)
+
+        # loss_hm = calc_loss(out_hms, hm)
+        # loss_hm = loss_hm.mean()
+        # loss_2d = criterion(outputs2d, labels2d)
+        # loss_3d = criterion(outputs3d, labels3d)
+
+        # loss = (lambda_hm * loss_hm) + (lambda_2d * loss_2d) + (lambda_3d * loss_3d)
 
         # calculate the distance between label3d and output3d
         b_labels3d = labels3d.reshape(-1, 21, 3) #[B, 21, 3]
@@ -192,18 +225,26 @@ if args.test:
         b_dis3d = torch.norm(labels3d - outputs3d, dim = -1)
         b_dis3d = b_dis3d.cpu().detach().numpy() #* 1000 [B, 21]
         b_dis3d = b_dis3d / np.repeat(scale_label.reshape(-1, 1), 21, axis=-1)
-
         e_dis3d.append(b_dis3d)
+
+        # calculate the distance between label2d and output2d
+        b_labels2d = labels2d.reshape(-1, 21, 2) #[B, 21, 2]
+        b_dis2d = torch.norm(labels2d - outputs2d, dim = -1)
+        b_dis2d = b_dis2d.cpu().detach().numpy() #* 1000 [B, 21]
+        e_dis2d.append(b_dis2d)
         
         running_loss += loss.data
         l_2d += loss_2d.data
         l_3d += loss_3d.data
-        l_hm += loss_hm.data
+        l_hm += loss_2dhm.data
+        l_res += loss_2dres.data
 
     e_dis3d = np.r_[e_dis3d] 
-    print(e_dis3d.shape)
-    # e_dis3d = e_dis3d.reshape(-1, 21)
+    # print(e_dis3d.shape)
     auc_test = calc_auc(e_dis3d.reshape(-1), 20, 50)
-    print('test auc: %f' % (auc_test))
-    print('avg test loss: %.5f; l_hm=%.5f, l_2d=%.5f, l_3d=%.5f' % 
-        (running_loss / (i+1), l_hm/(i+1), l_2d/(i+1), l_3d/(i+1)))
+    print('test auc20_50: %f' % (auc_test))
+    e_dis2d = np.r_[e_dis2d] 
+    print('test avg 2d_dis=%.2f, 3d_dis=%.2f' % 
+            (np.mean(e_dis2d), np.mean(e_dis3d)))
+    print('avg test loss: %.5f; l_res=%.5f, l_hm=%.5f, l_2d=%.5f, l_3d=%.5f' % 
+        (running_loss / (i+1), l_res/(i+1), l_hm/(i+1), l_2d/(i+1), l_3d/(i+1)))
