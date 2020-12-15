@@ -78,7 +78,9 @@ optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step, gamma=args.lr_step_gamma)
 scheduler.last_epoch = start
 lambda_2d = 0.0003
-lambda_hm = 1
+lambda_res = 0.001
+lambda_2dhm = 0.0003
+lambda_hm = 0.1
 
 """# pre train"""
 def calc_loss(combined_hm_preds, heatmaps):
@@ -115,25 +117,25 @@ if args.pre_train:
                 # zero the parameter gradients
                 optimizer.zero_grad()
                 # forward + backward + optimize
-                pred_hms, out_2d_hm, out_2d_pose = model(inputs)
-                poseHG2d = 0.5 * (out_2d_hm + out_2d_pose)
+                pred_hms, out_2d_hm, out_2d_res = model(inputs)
+                poseHG2d = out_2d_hm + out_2d_res
                 
                 loss_hm = calc_loss(pred_hms, hm)
                 loss_hm = loss_hm.mean() * 1000
-                loss2d_hm = criterion(out_2d_hm, labels2d)
-                loss2d_pose = criterion(out_2d_pose, labels2d)
+                loss_2dhm = criterion(out_2d_hm, labels2d)
+                loss_2dres = criterion(out_2d_res, labels2d-out_2d_hm)
                 loss2d = criterion(poseHG2d, labels2d)
 
-                loss = (lambda_hm * loss_hm) + (lambda_2d * loss2d_pose)# + (lambda_2d * loss2d_hm)
-                # loss = (lambda_hm * loss_hm) + (lambda_2d * loss2d)
+                # loss = (lambda_hm * loss_hm) + (lambda_2d * loss2d_pose) + (lambda_2d * loss2d_hm)
+                # loss = (lambda_2dhm * loss_2dhm) + (lambda_res * loss_2dres) + (lambda_2d * loss2d)
+                loss = (lambda_hm * loss_hm) + (lambda_res * loss_2dres)
                 train_loss += loss.data
                 loss.backward()
                 optimizer.step()
 
-                process_bar.set_postfix_str('loss=%.5f, l_hm=%.5f, 2d_hm=%.5f, 2d_pose=%.5f' % 
-                                            (loss.data, loss_hm.data, loss2d_hm.data, loss2d_pose.data))
-                # process_bar.set_postfix_str('loss=%.5f, l_hm=%.5f, 2d_hm=%.5f' % 
-                #                             (loss.data, loss_hm.data, loss2d_hm.data))
+                process_bar.set_postfix_str('loss=%.5f, 2d=%.2f, hm=%.5f, 2dhm=%.2f, res=%.2f' % 
+                                            (loss.data, loss2d.data, loss_hm.data, loss_2dhm.data, loss_2dres.data))
+
                 process_bar.update()
 
         print('%d epoch training done, train loss=%.5f' % (epoch+1, train_loss / (i+1)))
@@ -152,9 +154,10 @@ if args.test:
     print('Begin testing the network...')
     
     running_loss = 0.0
-    l_2d_hm = 0.0
-    l_2d_pose = 0.0
+    l_2dhm = 0.0
+    l_2dres = 0.0
     l_hm = 0.0
+    l_2d = 0.0
     e_dis2d = []
     for i, ts_data in enumerate(testloader):
         # get the inputs
@@ -163,15 +166,21 @@ if args.test:
         # wrap them in Variable
         inputs = Variable(inputs)
         labels2d = Variable(labels2d)
+        hm = Variable(hm)
 
         if use_cuda and torch.cuda.is_available():
             inputs = inputs.float().cuda(device=args.gpu_number[0])
             labels2d = labels2d.float().cuda(device=args.gpu_number[0])
-            hm = Variable(hm)
+            hm = hm.float().cuda(device=args.gpu_number[0])
 
-        pred_hms, out_2d_hm, out_2d_pose = model(inputs)
-        poseHG2d = 0.5 * (out_2d_hm + out_2d_pose)
-        # outputs2d_init, pred_hms, outputs2d, outputs3d = model(inputs)
+        pred_hms, out_2d_hm, out_2d_res = model(inputs)
+        poseHG2d = out_2d_hm + out_2d_res
+
+        loss_hm = calc_loss(pred_hms, hm)
+        loss_hm = loss_hm.mean() * 1000
+        loss_2dhm = criterion(out_2d_hm, labels2d)
+        loss_2dres = criterion(out_2d_res, labels2d-out_2d_hm)
+        loss2d = criterion(poseHG2d, labels2d)
 
         # calculate the distance between label3d and output3d
         b_labels2d = labels2d.reshape(-1, 21, 2) #[B, 21, 2]
@@ -180,21 +189,16 @@ if args.test:
         b_dis2d = b_dis2d.cpu().detach().numpy() #* 1000 [B, 21]
 
         e_dis2d.append(b_dis2d)
-        
-        loss_hm = calc_loss(pred_hms, hm)
-        loss_hm = loss_hm * 1000
-        loss2d_hm = criterion(out_2d_hm, labels2d)
-        loss2d_pose = criterion(out_2d_pose, labels2d)
-        loss2d = criterion(poseHG2d, labels2d)
 
-        # loss = (lambda_hm * loss_hm) + (lambda_2d * loss2d_hm) + (lambda_2d * loss2d_pose)
-        loss = (lambda_hm * loss_hm) + (lambda_2d * loss2d)
+        loss = (lambda_2dhm * loss_2dhm) + (lambda_res * loss_2dres) + (lambda_2d * loss2d)
         running_loss += loss.data
-        l_2d_hm += loss2d_hm.data
-        l_2d_pose += loss2d_pose.data
+        l_2dhm += loss_2dhm.mean().data
+        l_2dres += loss_2dres.mean().data
         l_hm += loss_hm.data
+        l_2d += loss2d.mean().data
     e_dis2d = np.r_[e_dis2d] 
     print(e_dis2d.shape, 'samples in total, avg 2d distance: ', np.mean(e_dis2d))
     
-    print('test loss: %.5f, l_hm=%.5f, 2d_hm=%.5f, 2d_pose=%.5f' % 
-            (running_loss / (i+1), l_hm / (i+1), l_2d_hm / (i+1), l_2d_pose / (i+1)))
+    # print('test loss: %.5f, 2d= l_hm=%.5f, 2dhm=%.5f, res=%.5f' % 
+    #         (running_loss / (i+1), l_2d / (i+1), l_hm / (i+1), l_2dhm / (i+1), l_2dres / (i+1)))
+    print('test heatmap loss: %.5f' % (l_hm / (i+1)))
