@@ -176,6 +176,7 @@ if args.train:
 """# Test"""
 
 if args.test:
+    import time
     print('Begin testing the network...')
     
     running_loss = 0.0
@@ -185,6 +186,7 @@ if args.test:
     l_res = 0.0
     e_dis3d = []
     e_dis2d = []
+    begin = time.time()
     for i, ts_data in enumerate(testloader):
         # get the inputs
         imgs, hm, labels2d, labels3d, scale_label = ts_data
@@ -238,7 +240,8 @@ if args.test:
         l_3d += loss_3d.data
         l_hm += loss_2dhm.data
         l_res += loss_2dres.data
-
+    end = time.time()
+    time_test = end - begin
     e_dis3d = np.r_[e_dis3d] 
     # print(e_dis3d.shape)
     auc_test = calc_auc(e_dis3d.reshape(-1), 20, 50)
@@ -248,3 +251,6 @@ if args.test:
             (np.mean(e_dis2d), np.mean(e_dis3d)))
     print('avg test loss: %.5f; l_res=%.5f, l_hm=%.5f, l_2d=%.5f, l_3d=%.5f' % 
         (running_loss / (i+1), l_res/(i+1), l_hm/(i+1), l_2d/(i+1), l_3d/(i+1)))
+
+    print('test time:%.2f, num samples: %d, speed: %.2f fps' % 
+            (time_test, args.batch_size * (i+1), args.batch_size * (i+1)/time_test))
