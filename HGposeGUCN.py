@@ -243,6 +243,9 @@ if args.test:
     end = time.time()
     time_test = end - begin
     e_dis3d = np.r_[e_dis3d] 
+    x = np.array(sorted(list(e_dis3d.reshape(-1))))
+    np.save('test_dis3d.npy', x)
+    np.savetxt('test_dis3d.csv', x, delimiter=',')
     # print(e_dis3d.shape)
     auc_test = calc_auc(e_dis3d.reshape(-1), 20, 50)
     print('test auc20_50: %f' % (auc_test))
